@@ -47,6 +47,7 @@ killport --timeout 5 3000            # Same (space-separated)
 killport --signal=HUP 3000           # Send SIGHUP instead of SIGTERM
 killport --signal HUP 3000           # Same (space-separated)
 killport --udp 3000                  # Kill process on UDP port 3000
+killport -q -y 3000                  # Quiet mode (exit code only)
 killport -yv                         # Combined short options
 killport -- 3000                     # Use -- to end options
 killport --version                   # Show version
@@ -63,6 +64,7 @@ killport --help                      # Show help
 | `--timeout=N` | Timeout in seconds before SIGKILL (default: 3) |
 | `--signal=SIG` | Signal to send (default: 15/SIGTERM) |
 | `--udp` | Target UDP instead of TCP (default: TCP) |
+| `-q`, `--quiet` | Suppress all output (exit code only) |
 | `--update` | Update to the latest version |
 | `-v`, `--version` | Show version |
 | `-h`, `--help` | Show help |

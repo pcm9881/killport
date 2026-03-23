@@ -36,11 +36,9 @@ if [ -f "$SHELL_RC" ]; then
   orig_perms=$(stat -f '%Lp' "$SHELL_RC" 2>/dev/null || stat -c '%a' "$SHELL_RC" 2>/dev/null || echo "644")
   tmp=$(mktemp)
   awk -v install_dir="$INSTALL_DIR" '
-    /# >>> killport >>>/ { skip=1; next }
-    /# <<< killport <<</ { skip=0; next }
-    skip { next }
     /^# killport$/ { next }
     index($0, "source \"" install_dir "/killport.sh\"") { next }
+    index($0, install_dir "/killport.sh") && /source / { next }
     { print }
   ' "$SHELL_RC" > "$tmp"
   chmod "$orig_perms" "$tmp" 2>/dev/null || true
