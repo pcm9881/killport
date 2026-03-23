@@ -1,32 +1,173 @@
 # killport - Kill process running on a given port
 # https://github.com/chungmanpark/killport
+# shellcheck shell=bash
 
-KILLPORT_VERSION="1.2.0"
+KILLPORT_VERSION="1.4.0"
+
+# ── Color support ────────────────────────────────────────────────────────────
+
+_killport_setup_colors() {
+  if [ -t 1 ] && [ -t 2 ] && command -v tput &>/dev/null \
+    && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+    _KP_RED=$(tput setaf 1)
+    _KP_GREEN=$(tput setaf 2)
+    _KP_YELLOW=$(tput setaf 3)
+    _KP_CYAN=$(tput setaf 6)
+    _KP_BOLD=$(tput bold)
+    _KP_RESET=$(tput sgr0)
+  else
+    _KP_RED="" _KP_GREEN="" _KP_YELLOW="" _KP_CYAN="" _KP_BOLD="" _KP_RESET=""
+  fi
+}
+
+# ── Signal helpers ───────────────────────────────────────────────────────────
+
+# Validate signal name or number
+_killport_valid_signal() {
+  local sig="$1"
+
+  # Strip SIG prefix if present (e.g., SIGTERM -> TERM)
+  sig="${sig#SIG}"
+
+  # Numeric: must be 1-31
+  if [[ "$sig" =~ ^[0-9]+$ ]]; then
+    [ "$sig" -ge 1 ] && [ "$sig" -le 31 ]
+    return $?
+  fi
+
+  # Named: check against kill -l output
+  kill -l "$sig" &>/dev/null
+  return $?
+}
+
+# Normalize signal: strip SIG prefix, uppercase
+_killport_normalize_signal() {
+  local sig="$1"
+  sig="${sig#SIG}"
+  if ! [[ "$sig" =~ ^[0-9]+$ ]]; then
+    sig=$(echo "$sig" | tr '[:lower:]' '[:upper:]')
+  fi
+  echo "$sig"
+}
+
+# Check if a signal is SIGTERM (numeric 15 or name TERM)
+_killport_is_sigterm() {
+  local sig="$1"
+  [ "$sig" = "15" ] || [ "$sig" = "TERM" ]
+}
+
+# ── Exit code priority ──────────────────────────────────────────────────────
+# Severity order: 126 (permission) > 2 (invalid args) > 1 (not found) > 130 (cancelled)
+
+_killport_exit_priority() {
+  case "$1" in
+    126) echo 4 ;;
+    2)   echo 3 ;;
+    1)   echo 2 ;;
+    130) echo 1 ;;
+    0)   echo 0 ;;
+    *)   echo 2 ;;
+  esac
+}
+
+_killport_worse_exit() {
+  local cur_pri new_pri
+  cur_pri=$(_killport_exit_priority "$1")
+  new_pri=$(_killport_exit_priority "$2")
+  if [ "$new_pri" -gt "$cur_pri" ]; then
+    echo "$2"
+  else
+    echo "$1"
+  fi
+}
+
+# ── Find PIDs listening on a port (cross-platform) ──────────────────────────
+
+_killport_find_pids() {
+  local port="$1"
+  local proto="${2:-tcp}"
+
+  case "$(uname -s)" in
+    Darwin)
+      if [ "$proto" = "udp" ]; then
+        lsof -ti "udp:$port" 2>/dev/null
+      else
+        lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null
+      fi
+      ;;
+    Linux)
+      if command -v ss &>/dev/null; then
+        if [ "$proto" = "udp" ]; then
+          ss -ulnp "sport = :$port" 2>/dev/null \
+            | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' \
+            | sort -u
+        else
+          ss -tlnp "sport = :$port" 2>/dev/null \
+            | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' \
+            | sort -u
+        fi
+      else
+        if [ "$proto" = "udp" ]; then
+          lsof -ti "udp:$port" 2>/dev/null
+        else
+          lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null
+        fi
+      fi
+      ;;
+    *)
+      if [ "$proto" = "udp" ]; then
+        lsof -ti "udp:$port" 2>/dev/null
+      else
+        lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null
+      fi
+      ;;
+  esac
+}
+
+# ── Main function ────────────────────────────────────────────────────────────
 
 killport() {
+  _killport_setup_colors
+
   local dry_run=false
   local force=false
   local timeout=3
   local signal=15
+  local proto="tcp"
   local ports=()
+  local pids proc_name proc_cmd waited
+  local exit_code=0
+  local opts_done=false
 
-  # Parse arguments (position-independent)
-  for arg in "$@"; do
-    case "$arg" in
-      --help|-h)
+  # Parse arguments
+  while [ $# -gt 0 ]; do
+    if $opts_done; then
+      ports+=("$1")
+      shift
+      continue
+    fi
+
+    case "$1" in
+      --)
+        opts_done=true
+        shift
+        continue
+        ;;
+      --help)
         echo "Usage: killport [options] <port> [port2] [port3] ..."
         echo ""
         echo "Options:"
-        echo "  -y, --yes         Kill without confirmation prompt"
-        echo "  --dry-run         Show process info without killing"
-        echo "  --timeout=N       Timeout in seconds before SIGKILL (default: 3)"
-        echo "  --signal=SIG      Signal to send (default: 15/SIGTERM)"
-        echo "  --update          Update killport to the latest version"
-        echo "  --version, -v     Show version"
-        echo "  --help, -h        Show this help"
+        echo "  -y, --yes, --force  Kill without confirmation prompt"
+        echo "  --dry-run           Show process info without killing"
+        echo "  --timeout=N         Timeout in seconds before SIGKILL (default: 3)"
+        echo "  --signal=SIG        Signal to send (default: 15/SIGTERM)"
+        echo "  --udp               Target UDP instead of TCP (default: TCP)"
+        echo "  --update            Update killport to the latest version"
+        echo "  --version, -v       Show version"
+        echo "  --help, -h          Show this help"
         return 0
         ;;
-      --version|-v)
+      --version)
         echo "killport $KILLPORT_VERSION"
         return 0
         ;;
@@ -37,38 +178,94 @@ killport() {
       --dry-run)
         dry_run=true
         ;;
-      -y|--yes|--force)
+      --yes|--force)
         force=true
         ;;
+      --udp)
+        proto="udp"
+        ;;
       --timeout=*)
-        timeout="${arg#--timeout=}"
+        timeout="${1#--timeout=}"
         if ! [[ "$timeout" =~ ^[0-9]+$ ]] || [ "$timeout" -lt 1 ]; then
-          echo "[error] --timeout must be a positive integer" >&2
-          return 1
+          echo "${_KP_RED}[error]${_KP_RESET} --timeout must be a positive integer" >&2
+          return 2
+        fi
+        ;;
+      --timeout)
+        if [ $# -lt 2 ]; then
+          echo "${_KP_RED}[error]${_KP_RESET} --timeout requires a value" >&2
+          return 2
+        fi
+        timeout="$2"
+        shift
+        if ! [[ "$timeout" =~ ^[0-9]+$ ]] || [ "$timeout" -lt 1 ]; then
+          echo "${_KP_RED}[error]${_KP_RESET} --timeout must be a positive integer" >&2
+          return 2
         fi
         ;;
       --signal=*)
-        signal="${arg#--signal=}"
+        signal="${1#--signal=}"
+        if ! _killport_valid_signal "$signal"; then
+          echo "${_KP_RED}[error]${_KP_RESET} Unknown signal: $signal" >&2
+          echo "${_KP_CYAN}[hint]${_KP_RESET}  Use a number (1-31) or name (TERM, HUP, KILL, ...)" >&2
+          return 2
+        fi
+        signal=$(_killport_normalize_signal "$signal")
+        ;;
+      --signal)
+        if [ $# -lt 2 ]; then
+          echo "${_KP_RED}[error]${_KP_RESET} --signal requires a value" >&2
+          return 2
+        fi
+        signal="$2"
+        shift
+        if ! _killport_valid_signal "$signal"; then
+          echo "${_KP_RED}[error]${_KP_RESET} Unknown signal: $signal" >&2
+          echo "${_KP_CYAN}[hint]${_KP_RESET}  Use a number (1-31) or name (TERM, HUP, KILL, ...)" >&2
+          return 2
+        fi
+        signal=$(_killport_normalize_signal "$signal")
+        ;;
+      -*)
+        # Handle combined short options (e.g., -yv, -hy)
+        local shorts="${1#-}"
+        local i=0
+        while [ "$i" -lt "${#shorts}" ]; do
+          local c="${shorts:$i:1}"
+          case "$c" in
+            y) force=true ;;
+            v) echo "killport $KILLPORT_VERSION"; return 0 ;;
+            h)
+              killport --help
+              return 0
+              ;;
+            *)
+              echo "${_KP_RED}[error]${_KP_RESET} Unknown option: -$c" >&2
+              echo "${_KP_CYAN}[hint]${_KP_RESET}  Try 'killport --help' for usage" >&2
+              return 2
+              ;;
+          esac
+          i=$((i + 1))
+        done
         ;;
       *)
-        ports+=("$arg")
+        ports+=("$1")
         ;;
     esac
+    shift
   done
 
   if [ ${#ports[@]} -eq 0 ]; then
     echo "Usage: killport [options] <port> [port2] ..." >&2
     echo "Try 'killport --help' for more information." >&2
-    return 1
+    return 2
   fi
-
-  local has_failure=false
 
   for port in "${ports[@]}"; do
     # Validate: must be numeric
     if ! [[ "$port" =~ ^[0-9]+$ ]]; then
-      echo "[warn] '$port' is not a valid port number" >&2
-      has_failure=true
+      echo "${_KP_YELLOW}[warn]${_KP_RESET} '$port' is not a valid port number" >&2
+      exit_code=$(_killport_worse_exit "$exit_code" 2)
       continue
     fi
 
@@ -77,38 +274,39 @@ killport() {
 
     # Validate: must be in range 1-65535
     if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-      echo "[warn] '$port' is out of range (1-65535)" >&2
-      has_failure=true
+      echo "${_KP_YELLOW}[warn]${_KP_RESET} '$port' is out of range (1-65535)" >&2
+      exit_code=$(_killport_worse_exit "$exit_code" 2)
       continue
     fi
 
-    local pids
-    pids=$(_killport_find_pids "$port")
+    pids=$(_killport_find_pids "$port" "$proto")
 
     if [ -z "$pids" ]; then
-      echo "[miss] No process found on port $port" >&2
-      has_failure=true
+      echo "${_KP_YELLOW}[miss]${_KP_RESET} No process found on $(echo "$proto" | tr '[:lower:]' '[:upper:]') port $port" >&2
+      exit_code=$(_killport_worse_exit "$exit_code" 1)
       continue
     fi
 
     for pid in $pids; do
-      # Self-kill protection
-      if [ "$pid" -eq "$$" ] 2>/dev/null || [ "$pid" -eq "$PPID" ] 2>/dev/null; then
-        echo "        [skip] PID $pid is the current shell (refusing to self-kill)" >&2
+      # Self-kill protection: check $$ (shell PID), $PPID, and $BASHPID if available
+      local self_pid="${BASHPID:-$$}"
+      if [ "$pid" -eq "$self_pid" ] 2>/dev/null \
+        || [ "$pid" -eq "$$" ] 2>/dev/null \
+        || [ "$pid" -eq "$PPID" ] 2>/dev/null; then
+        echo "        ${_KP_YELLOW}[skip]${_KP_RESET} PID $pid is the current shell (refusing to self-kill)" >&2
         continue
       fi
 
-      local proc_name proc_cmd
       proc_name=$(ps -p "$pid" -o comm= 2>/dev/null)
       proc_cmd=$(ps -p "$pid" -o args= 2>/dev/null)
 
       echo ""
-      echo "[found] Port $port -> PID $pid"
+      echo "${_KP_CYAN}[found]${_KP_RESET} $(echo "$proto" | tr '[:lower:]' '[:upper:]') port $port -> ${_KP_BOLD}PID $pid${_KP_RESET}"
       echo "        Process : $proc_name"
       echo "        Command : $proc_cmd"
 
       if $dry_run; then
-        echo "        (dry-run) skipped"
+        echo "        ${_KP_CYAN}(dry-run)${_KP_RESET} skipped"
         continue
       fi
 
@@ -117,6 +315,7 @@ killport() {
         read -r answer
         if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
           echo "        Skipped PID $pid"
+          exit_code=$(_killport_worse_exit "$exit_code" 130)
           continue
         fi
       fi
@@ -124,99 +323,103 @@ killport() {
       # Attempt kill with specified signal
       if ! kill -"$signal" "$pid" 2>/dev/null; then
         if [ "$(id -u)" -ne 0 ]; then
-          echo "        [error] Permission denied for PID $pid" >&2
-          echo "        [hint] Try: sudo kill -$signal $pid" >&2
+          echo "        ${_KP_RED}[error]${_KP_RESET} Permission denied for PID $pid" >&2
+          echo "        ${_KP_CYAN}[hint]${_KP_RESET}  Try: sudo kill -$signal $pid" >&2
+          exit_code=$(_killport_worse_exit "$exit_code" 126)
         else
-          echo "        [error] Failed to send signal $signal to PID $pid" >&2
+          echo "        ${_KP_RED}[error]${_KP_RESET} Failed to send signal $signal to PID $pid" >&2
+          exit_code=$(_killport_worse_exit "$exit_code" 1)
         fi
-        has_failure=true
         continue
       fi
 
       echo -n "        Signal $signal sent, waiting..."
 
       # Poll for process exit (1s intervals, up to $timeout seconds)
-      local waited=0
+      waited=0
       while [ "$waited" -lt "$timeout" ]; do
         if ! kill -0 "$pid" 2>/dev/null; then
           echo " done"
-          echo "        [ok] Killed PID $pid (signal $signal)"
+          echo "        ${_KP_GREEN}[ok]${_KP_RESET} Killed PID $pid (signal $signal)"
           break
         fi
         sleep 1
         waited=$((waited + 1))
       done
 
-      # If still alive, escalate to SIGKILL (only when using default SIGTERM)
+      # If still alive, escalate to SIGKILL (only when using SIGTERM)
       if kill -0 "$pid" 2>/dev/null; then
-        if [ "$signal" != "15" ]; then
+        if ! _killport_is_sigterm "$signal"; then
           echo " timeout"
-          echo "        [warn] Process $pid did not exit within ${timeout}s" >&2
-          has_failure=true
+          echo "        ${_KP_YELLOW}[warn]${_KP_RESET} Process $pid did not exit within ${timeout}s" >&2
+          exit_code=$(_killport_worse_exit "$exit_code" 1)
         else
           echo " timeout"
           echo -n "        Escalating to SIGKILL..."
           if kill -9 "$pid" 2>/dev/null; then
-            echo " done"
-            echo "        [ok] Killed PID $pid (SIGKILL)"
+            # Verify process actually exited after SIGKILL
+            sleep 0.5
+            if kill -0 "$pid" 2>/dev/null; then
+              echo " ${_KP_RED}failed${_KP_RESET}" >&2
+              echo "        ${_KP_RED}[error]${_KP_RESET} PID $pid still alive after SIGKILL (zombie or kernel-blocked)" >&2
+              exit_code=$(_killport_worse_exit "$exit_code" 1)
+            else
+              echo " done"
+              echo "        ${_KP_GREEN}[ok]${_KP_RESET} Killed PID $pid (SIGKILL)"
+            fi
           else
-            echo " failed" >&2
-            echo "        [error] Failed to kill PID $pid" >&2
-            has_failure=true
+            echo " ${_KP_RED}failed${_KP_RESET}" >&2
+            echo "        ${_KP_RED}[error]${_KP_RESET} Failed to kill PID $pid" >&2
+            exit_code=$(_killport_worse_exit "$exit_code" 1)
           fi
         fi
       fi
     done
   done
 
-  if $has_failure; then
-    return 1
-  fi
-  return 0
+  return "$exit_code"
 }
 
-# Find PIDs listening on a port (cross-platform)
-_killport_find_pids() {
-  local port="$1"
-  case "$(uname -s)" in
-    Darwin)
-      lsof -ti "tcp:$port" 2>/dev/null
-      ;;
-    Linux)
-      if command -v ss &>/dev/null; then
-        ss -tlnp "sport = :$port" 2>/dev/null \
-          | grep -oP 'pid=\K[0-9]+' \
-          | sort -u
-      else
-        lsof -ti "tcp:$port" 2>/dev/null
-      fi
-      ;;
-    *)
-      # Fallback: try lsof
-      lsof -ti "tcp:$port" 2>/dev/null
-      ;;
-  esac
-}
+# ── Self-update ──────────────────────────────────────────────────────────────
 
-# Self-update function
 killport_update() {
+  _killport_setup_colors
+
   local repo_raw="https://raw.githubusercontent.com/chungmanpark/killport/main"
   local install_dir="${KILLPORT_HOME:-$HOME/.killport}"
   local target="$install_dir/killport.sh"
 
-  echo "[update] Downloading latest killport..."
+  echo "${_KP_CYAN}[update]${_KP_RESET} Downloading latest killport..."
 
-  local tmp
+  # Verify write permissions
+  if [ -f "$target" ] && [ ! -w "$target" ]; then
+    echo "${_KP_RED}[error]${_KP_RESET} No write permission to $target" >&2
+    echo "${_KP_CYAN}[hint]${_KP_RESET}  Try running with appropriate permissions" >&2
+    return 126
+  fi
+
+  if [ ! -d "$install_dir" ]; then
+    echo "${_KP_RED}[error]${_KP_RESET} Install directory not found: $install_dir" >&2
+    echo "${_KP_CYAN}[hint]${_KP_RESET}  Run the install script first" >&2
+    return 1
+  fi
+
+  if [ ! -w "$install_dir" ]; then
+    echo "${_KP_RED}[error]${_KP_RESET} No write permission to $install_dir" >&2
+    return 126
+  fi
+
+  local tmp orig_perms
   tmp=$(mktemp)
   if ! curl -fsSL "$repo_raw/killport.sh" -o "$tmp" 2>/dev/null; then
-    echo "[error] Failed to download update" >&2
+    echo "${_KP_RED}[error]${_KP_RESET} Failed to download update" >&2
     rm -f "$tmp"
     return 1
   fi
 
   # Verify download integrity
   if ! grep -q 'killport()' "$tmp"; then
-    echo "[error] Downloaded file is invalid (missing killport function)" >&2
+    echo "${_KP_RED}[error]${_KP_RESET} Downloaded file is invalid (missing killport function)" >&2
     rm -f "$tmp"
     return 1
   fi
@@ -225,13 +428,62 @@ killport_update() {
   new_version=$(grep '^KILLPORT_VERSION=' "$tmp" | head -1 | cut -d'"' -f2)
 
   if [ "$new_version" = "$KILLPORT_VERSION" ]; then
-    echo "[update] Already up to date ($KILLPORT_VERSION)"
+    echo "${_KP_GREEN}[update]${_KP_RESET} Already up to date ($KILLPORT_VERSION)"
     rm -f "$tmp"
     return 0
   fi
 
+  # Preserve original file permissions
+  if [ -f "$target" ]; then
+    orig_perms=$(stat -f '%Lp' "$target" 2>/dev/null || stat -c '%a' "$target" 2>/dev/null || echo "644")
+    chmod "$orig_perms" "$tmp" 2>/dev/null || true
+  fi
+
   mv "$tmp" "$target"
-  echo "[update] Updated: $KILLPORT_VERSION -> $new_version"
-  echo "         Run 'source $target' or open a new terminal to apply."
+  echo "${_KP_GREEN}[update]${_KP_RESET} Updated: $KILLPORT_VERSION -> $new_version"
+
+  # Auto-source the updated file
+  # shellcheck disable=SC1090
+  source "$target"
+  echo "         Applied immediately (killport $new_version is now active)."
   return 0
 }
+
+# ── Shell completions ────────────────────────────────────────────────────────
+
+# Bash completion
+_killport_bash_completion() {
+  local cur="${COMP_WORDS[COMP_CWORD]}"
+  local opts="--help --version --update --dry-run --yes --force --timeout= --signal= --udp -y -v -h"
+
+  if [[ "$cur" == -* ]]; then
+    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+  fi
+}
+
+# Zsh completion
+_killport_zsh_completion() {
+  local -a options
+  options=(
+    '--help[Show help]'
+    '-h[Show help]'
+    '--version[Show version]'
+    '-v[Show version]'
+    '--update[Update to latest version]'
+    '--dry-run[Show process info without killing]'
+    '--yes[Kill without confirmation]'
+    '-y[Kill without confirmation]'
+    '--force[Kill without confirmation]'
+    '--timeout=[Timeout before SIGKILL (seconds)]:seconds:'
+    '--signal=[Signal to send]:signal:(TERM HUP INT QUIT KILL USR1 USR2)'
+    '--udp[Target UDP instead of TCP]'
+  )
+  _arguments -s "$options[@]" '*:port:'
+}
+
+# Register completions
+if [ -n "$BASH_VERSION" ]; then
+  complete -F _killport_bash_completion killport
+elif [ -n "$ZSH_VERSION" ]; then
+  compdef _killport_zsh_completion killport 2>/dev/null || true
+fi

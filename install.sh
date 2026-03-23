@@ -18,11 +18,15 @@ detect_shell_rc() {
       echo "        See https://github.com/chungmanpark/killport/issues" >&2
       exit 1
       ;;
-    *)    echo "$HOME/.zshrc" ;;
+    *)
+      echo "[warn] Unknown shell '$shell_name'. Defaulting to ~/.bashrc" >&2
+      echo "       Set SHELL_RC env var to override (e.g., SHELL_RC=~/.profile)" >&2
+      echo "$HOME/.bashrc"
+      ;;
   esac
 }
 
-SHELL_RC=$(detect_shell_rc)
+SHELL_RC="${SHELL_RC:-$(detect_shell_rc)}"
 
 # Check if already installed (allow upgrade)
 if [ -f "$INSTALL_DIR/killport.sh" ]; then
@@ -52,7 +56,16 @@ if ! grep -q 'killport()' "$tmp"; then
   exit 1
 fi
 
-mv "$tmp" "$INSTALL_DIR/killport.sh"
+# Preserve permissions if upgrading, otherwise set sensible default
+target="$INSTALL_DIR/killport.sh"
+if [ -f "$target" ]; then
+  orig_perms=$(stat -f '%Lp' "$target" 2>/dev/null || stat -c '%a' "$target" 2>/dev/null || echo "644")
+  chmod "$orig_perms" "$tmp" 2>/dev/null || true
+else
+  chmod 644 "$tmp" 2>/dev/null || true
+fi
+
+mv "$tmp" "$target"
 
 # Add source line to shell rc (only if not already present)
 if ! grep -qF "source \"$INSTALL_DIR/killport.sh\"" "$SHELL_RC" 2>/dev/null; then
