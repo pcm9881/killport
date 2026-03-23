@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 INSTALL_DIR="${KILLPORT_HOME:-$HOME/.killport}"
 

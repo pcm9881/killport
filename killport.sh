@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # killport - Kill process running on a given port
 # https://github.com/chungmanpark/killport
 # shellcheck shell=bash
@@ -72,12 +73,8 @@ _killport_exit_priority() {
 
 _killport_worse_exit() {
   local cur_pri new_pri
-  case "$1" in
-    126) cur_pri=4 ;; 2) cur_pri=3 ;; 1) cur_pri=2 ;; 130) cur_pri=1 ;; 0) cur_pri=0 ;; *) cur_pri=2 ;;
-  esac
-  case "$2" in
-    126) new_pri=4 ;; 2) new_pri=3 ;; 1) new_pri=2 ;; 130) new_pri=1 ;; 0) new_pri=0 ;; *) new_pri=2 ;;
-  esac
+  cur_pri=$(_killport_exit_priority "$1")
+  new_pri=$(_killport_exit_priority "$2")
   if [ "$new_pri" -gt "$cur_pri" ]; then
     echo "$2"
   else
@@ -103,9 +100,9 @@ _killport_find_pids() {
 
   # Fallback: lsof (macOS, Linux without ss, others)
   if [ "$proto" = "udp" ]; then
-    lsof -ti "udp:$port" 2>/dev/null
+    lsof -ti "udp:$port" 2>/dev/null | sort -u
   else
-    lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null
+    lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | sort -u
   fi
 }
 
@@ -182,7 +179,7 @@ killport() {
         fi
         ;;
       --timeout)
-        if [ $# -lt 2 ]; then
+        if [ $# -lt 2 ] || [[ "$2" == -* ]]; then
           echo "${_KP_RED}[error]${_KP_RESET} --timeout requires a value" >&2
           return 2
         fi
@@ -203,7 +200,7 @@ killport() {
         signal=$(_killport_normalize_signal "$signal")
         ;;
       --signal)
-        if [ $# -lt 2 ]; then
+        if [ $# -lt 2 ] || [[ "$2" == -* ]]; then
           echo "${_KP_RED}[error]${_KP_RESET} --signal requires a value" >&2
           return 2
         fi
@@ -305,16 +302,16 @@ killport() {
 
       if ! $force; then
         if $quiet; then
-          # quiet mode implies no interactive prompt, skip
-          exit_code=$(_killport_worse_exit "$exit_code" 130)
-          continue
-        fi
-        echo -n "        Kill this process? [y/N] "
-        read -r answer
-        if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
-          echo "        Skipped PID $pid"
-          exit_code=$(_killport_worse_exit "$exit_code" 130)
-          continue
+          # quiet mode cannot prompt interactively; imply --force
+          :
+        else
+          echo -n "        Kill this process? [y/N] "
+          read -r answer
+          if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+            echo "        Skipped PID $pid"
+            exit_code=$(_killport_worse_exit "$exit_code" 130)
+            continue
+          fi
         fi
       fi
 
@@ -427,6 +424,15 @@ killport_update() {
 
   if [ "$new_version" = "$KILLPORT_VERSION" ]; then
     echo "${_KP_GREEN}[update]${_KP_RESET} Already up to date ($KILLPORT_VERSION)"
+    rm -f "$tmp"
+    return 0
+  fi
+
+  # Semver comparison: prevent downgrade
+  local higher
+  higher=$(printf '%s\n%s\n' "$KILLPORT_VERSION" "$new_version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+  if [ "$higher" = "$KILLPORT_VERSION" ]; then
+    echo "${_KP_YELLOW}[update]${_KP_RESET} Local version ($KILLPORT_VERSION) is newer than remote ($new_version), skipping"
     rm -f "$tmp"
     return 0
   fi

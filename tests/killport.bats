@@ -174,3 +174,58 @@ setup() {
   run killport --quiet -- 19999
   [ "$status" -eq 1 ]
 }
+
+# ── Actual kill ─────────────────────────────────────────────────────────────
+
+@test "killport -y kills a process on a port" {
+  python3 -m http.server 18766 &>/dev/null &
+  local bg_pid=$!
+  sleep 1
+
+  run killport -y 18766
+  [ "$status" -eq 0 ]
+
+  # Verify process is dead
+  ! kill -0 "$bg_pid" 2>/dev/null
+  wait "$bg_pid" 2>/dev/null || true
+}
+
+@test "quiet mode with force kills successfully" {
+  python3 -m http.server 18767 &>/dev/null &
+  local bg_pid=$!
+  sleep 1
+
+  run killport -yq 18767
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  ! kill -0 "$bg_pid" 2>/dev/null
+  wait "$bg_pid" 2>/dev/null || true
+}
+
+@test "quiet mode without force still kills (implies force)" {
+  python3 -m http.server 18768 &>/dev/null &
+  local bg_pid=$!
+  sleep 1
+
+  run killport -q 18768
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  ! kill -0 "$bg_pid" 2>/dev/null
+  wait "$bg_pid" 2>/dev/null || true
+}
+
+# ── Argument edge cases ─────────────────────────────────────────────────────
+
+@test "--timeout without value returns exit code 2" {
+  run killport --timeout --signal=TERM 3000
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"requires a value"* ]]
+}
+
+@test "--signal without value returns exit code 2" {
+  run killport --signal --timeout=3 3000
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"requires a value"* ]]
+}

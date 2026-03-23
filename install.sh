@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/chungmanpark/killport/main"
 INSTALL_DIR="${KILLPORT_HOME:-$HOME/.killport}"
