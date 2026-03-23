@@ -5,7 +5,7 @@ Kill processes by port number. Simple, cross-platform (macOS / Linux), interacti
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chungmanpark/killport/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pcm9881/killport/main/install.sh | bash
 ```
 
 Then reload your shell:
@@ -21,7 +21,7 @@ source ~/.bashrc
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chungmanpark/killport/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pcm9881/killport/main/uninstall.sh | bash
 ```
 
 Then reload your shell:

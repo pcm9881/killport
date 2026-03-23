@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # killport - Kill process running on a given port
-# https://github.com/chungmanpark/killport
+# https://github.com/pcm9881/killport
 # shellcheck shell=bash
 
 KILLPORT_VERSION="1.5.1"
@@ -393,7 +393,7 @@ killport() {
 killport_update() {
   _killport_setup_colors
 
-  local repo_raw="https://raw.githubusercontent.com/chungmanpark/killport/main"
+  local repo_raw="https://raw.githubusercontent.com/pcm9881/killport/main"
   local install_dir="${KILLPORT_HOME:-$HOME/.killport}"
   local target="$install_dir/killport.sh"
 

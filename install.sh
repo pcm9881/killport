@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/chungmanpark/killport/main"
+REPO_RAW="https://raw.githubusercontent.com/pcm9881/killport/main"
 INSTALL_DIR="${KILLPORT_HOME:-$HOME/.killport}"
 SOURCE_LINE="# killport
 [ -f \"$INSTALL_DIR/killport.sh\" ] && source \"$INSTALL_DIR/killport.sh\""
@@ -19,7 +19,7 @@ detect_shell_rc() {
     bash) echo "$HOME/.bashrc" ;;
     fish)
       echo "[error] Fish shell is not yet supported." >&2
-      echo "        See https://github.com/chungmanpark/killport/issues" >&2
+      echo "        See https://github.com/pcm9881/killport/issues" >&2
       exit 1
       ;;
     *)
