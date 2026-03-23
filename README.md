@@ -64,7 +64,7 @@ killport --help                      # Show help
 | `--timeout=N` | Timeout in seconds before SIGKILL (default: 3) |
 | `--signal=SIG` | Signal to send (default: 15/SIGTERM) |
 | `--udp` | Target UDP instead of TCP (default: TCP) |
-| `-q`, `--quiet` | Suppress all output (exit code only) |
+| `-q`, `--quiet` | Suppress all output (exit code only; implies `--force`) |
 | `--update` | Update to the latest version |
 | `-v`, `--version` | Show version |
 | `-h`, `--help` | Show help |

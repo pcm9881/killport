@@ -7,6 +7,10 @@ INSTALL_DIR="${KILLPORT_HOME:-$HOME/.killport}"
 SOURCE_LINE="# killport
 [ -f \"$INSTALL_DIR/killport.sh\" ] && source \"$INSTALL_DIR/killport.sh\""
 
+# ── detect_shell_rc ──────────────────────────────────────────────────────────
+# NOTE: This function is duplicated in install.sh and uninstall.sh.
+# Both copies must be kept in sync. Each script must remain self-contained
+# for curl-pipe installation (curl ... | bash).
 detect_shell_rc() {
   local shell_name
   shell_name="$(basename "$SHELL")"
@@ -45,6 +49,14 @@ mkdir -p "$INSTALL_DIR"
 tmp=$(mktemp)
 if ! curl -fsSL "$REPO_RAW/killport.sh" -o "$tmp"; then
   echo "[error] Failed to download killport.sh" >&2
+  rm -f "$tmp"
+  exit 1
+fi
+
+# Verify download integrity: size check
+file_size=$(wc -c < "$tmp")
+if [ "$file_size" -lt 1000 ]; then
+  echo "[error] Downloaded file is too small (${file_size} bytes, expected >1000)" >&2
   rm -f "$tmp"
   exit 1
 fi

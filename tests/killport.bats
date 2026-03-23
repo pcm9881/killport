@@ -1,8 +1,37 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   # shellcheck disable=SC1091
   source "$BATS_TEST_DIRNAME/../killport.sh"
+}
+
+# ── Test helpers ────────────────────────────────────────────────────────────
+
+# Wait for a port to become listening (up to 5s)
+wait_for_port() {
+  local port="$1" i=0
+  while [ "$i" -lt 50 ]; do
+    if lsof -ti "tcp:$port" -sTCP:LISTEN &>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Find a free port in the ephemeral range
+get_free_port() {
+  local port
+  while true; do
+    port=$((RANDOM % 10000 + 20000))
+    if ! lsof -ti "tcp:$port" &>/dev/null 2>&1; then
+      echo "$port"
+      return
+    fi
+  done
 }
 
 # ── Version & help ───────────────────────────────────────────────────────────
@@ -92,12 +121,14 @@ setup() {
 # ── Dry run ──────────────────────────────────────────────────────────────────
 
 @test "dry-run shows process info without killing" {
-  # Start a background process on a known port
-  python3 -m http.server 18765 &>/dev/null &
-  local bg_pid=$!
-  sleep 1
+  local port
+  port=$(get_free_port)
 
-  run killport --dry-run 18765
+  python3 -m http.server "$port" &>/dev/null &
+  local bg_pid=$!
+  wait_for_port "$port"
+
+  run killport --dry-run "$port"
   [ "$status" -eq 0 ]
   [[ "$output" == *"dry-run"* ]]
 
@@ -178,41 +209,50 @@ setup() {
 # ── Actual kill ─────────────────────────────────────────────────────────────
 
 @test "killport -y kills a process on a port" {
-  python3 -m http.server 18766 &>/dev/null &
-  local bg_pid=$!
-  sleep 1
+  local port
+  port=$(get_free_port)
 
-  run killport -y 18766
+  python3 -m http.server "$port" &>/dev/null &
+  local bg_pid=$!
+  wait_for_port "$port"
+
+  run killport -y "$port"
   [ "$status" -eq 0 ]
 
   # Verify process is dead
-  ! kill -0 "$bg_pid" 2>/dev/null
+  run ! kill -0 "$bg_pid" 2>/dev/null
   wait "$bg_pid" 2>/dev/null || true
 }
 
 @test "quiet mode with force kills successfully" {
-  python3 -m http.server 18767 &>/dev/null &
-  local bg_pid=$!
-  sleep 1
+  local port
+  port=$(get_free_port)
 
-  run killport -yq 18767
+  python3 -m http.server "$port" &>/dev/null &
+  local bg_pid=$!
+  wait_for_port "$port"
+
+  run killport -yq "$port"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 
-  ! kill -0 "$bg_pid" 2>/dev/null
+  run ! kill -0 "$bg_pid" 2>/dev/null
   wait "$bg_pid" 2>/dev/null || true
 }
 
 @test "quiet mode without force still kills (implies force)" {
-  python3 -m http.server 18768 &>/dev/null &
-  local bg_pid=$!
-  sleep 1
+  local port
+  port=$(get_free_port)
 
-  run killport -q 18768
+  python3 -m http.server "$port" &>/dev/null &
+  local bg_pid=$!
+  wait_for_port "$port"
+
+  run killport -q "$port"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 
-  ! kill -0 "$bg_pid" 2>/dev/null
+  run ! kill -0 "$bg_pid" 2>/dev/null
   wait "$bg_pid" 2>/dev/null || true
 }
 

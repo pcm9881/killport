@@ -4,6 +4,10 @@ set -euo pipefail
 
 INSTALL_DIR="${KILLPORT_HOME:-$HOME/.killport}"
 
+# ── detect_shell_rc ──────────────────────────────────────────────────────────
+# NOTE: This function is duplicated in install.sh and uninstall.sh.
+# Both copies must be kept in sync. Each script must remain self-contained
+# for curl-pipe installation (curl ... | bash).
 detect_shell_rc() {
   local shell_name
   shell_name="$(basename "$SHELL")"

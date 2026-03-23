@@ -18,6 +18,7 @@ jobs:
           shellcheck killport.sh
           shellcheck install.sh
           shellcheck uninstall.sh
+          shellcheck --shell=bash tests/*.bats
 
   test:
     runs-on: ${{ matrix.os }}

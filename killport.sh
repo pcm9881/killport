@@ -3,7 +3,7 @@
 # https://github.com/chungmanpark/killport
 # shellcheck shell=bash
 
-KILLPORT_VERSION="1.5.0"
+KILLPORT_VERSION="1.5.1"
 
 # ── Color support ────────────────────────────────────────────────────────────
 
@@ -55,6 +55,25 @@ _killport_normalize_signal() {
 _killport_is_sigterm() {
   local sig="$1"
   [ "$sig" = "15" ] || [ "$sig" = "TERM" ]
+}
+
+# ── Argument validation helpers ──────────────────────────────────────────────
+
+_killport_validate_timeout() {
+  local val="$1"
+  if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -lt 1 ]; then
+    echo "${_KP_RED}[error]${_KP_RESET} --timeout must be a positive integer" >&2
+    return 2
+  fi
+}
+
+_killport_validate_signal() {
+  local val="$1"
+  if ! _killport_valid_signal "$val"; then
+    echo "${_KP_RED}[error]${_KP_RESET} Unknown signal: $val" >&2
+    echo "${_KP_CYAN}[hint]${_KP_RESET}  Use a number (1-31) or name (TERM, HUP, KILL, ...)" >&2
+    return 2
+  fi
 }
 
 # ── Exit code priority ──────────────────────────────────────────────────────
@@ -145,7 +164,7 @@ killport() {
         echo "  --timeout=N         Timeout in seconds before SIGKILL (default: 3)"
         echo "  --signal=SIG        Signal to send (default: 15/SIGTERM)"
         echo "  --udp               Target UDP instead of TCP (default: TCP)"
-        echo "  -q, --quiet         Suppress all output (exit code only)"
+        echo "  -q, --quiet         Suppress all output (exit code only; implies --force)"
         echo "  --update            Update killport to the latest version"
         echo "  --version, -v       Show version"
         echo "  --help, -h          Show this help"
@@ -173,10 +192,7 @@ killport() {
         ;;
       --timeout=*)
         timeout="${1#--timeout=}"
-        if ! [[ "$timeout" =~ ^[0-9]+$ ]] || [ "$timeout" -lt 1 ]; then
-          echo "${_KP_RED}[error]${_KP_RESET} --timeout must be a positive integer" >&2
-          return 2
-        fi
+        _killport_validate_timeout "$timeout" || return $?
         ;;
       --timeout)
         if [ $# -lt 2 ] || [[ "$2" == -* ]]; then
@@ -185,18 +201,11 @@ killport() {
         fi
         timeout="$2"
         shift
-        if ! [[ "$timeout" =~ ^[0-9]+$ ]] || [ "$timeout" -lt 1 ]; then
-          echo "${_KP_RED}[error]${_KP_RESET} --timeout must be a positive integer" >&2
-          return 2
-        fi
+        _killport_validate_timeout "$timeout" || return $?
         ;;
       --signal=*)
         signal="${1#--signal=}"
-        if ! _killport_valid_signal "$signal"; then
-          echo "${_KP_RED}[error]${_KP_RESET} Unknown signal: $signal" >&2
-          echo "${_KP_CYAN}[hint]${_KP_RESET}  Use a number (1-31) or name (TERM, HUP, KILL, ...)" >&2
-          return 2
-        fi
+        _killport_validate_signal "$signal" || return $?
         signal=$(_killport_normalize_signal "$signal")
         ;;
       --signal)
@@ -206,11 +215,7 @@ killport() {
         fi
         signal="$2"
         shift
-        if ! _killport_valid_signal "$signal"; then
-          echo "${_KP_RED}[error]${_KP_RESET} Unknown signal: $signal" >&2
-          echo "${_KP_CYAN}[hint]${_KP_RESET}  Use a number (1-31) or name (TERM, HUP, KILL, ...)" >&2
-          return 2
-        fi
+        _killport_validate_signal "$signal" || return $?
         signal=$(_killport_normalize_signal "$signal")
         ;;
       -*)
@@ -315,6 +320,14 @@ killport() {
         fi
       fi
 
+      # Re-verify PID still owns this port (TOCTOU mitigation)
+      local recheck_pids
+      recheck_pids=$(_killport_find_pids "$port" "$proto")
+      if ! echo "$recheck_pids" | grep -qw "$pid"; then
+        $quiet || echo "        ${_KP_YELLOW}[skip]${_KP_RESET} PID $pid no longer on port $port (process changed)" >&2
+        continue
+      fi
+
       # Attempt kill with specified signal
       if ! kill -"$signal" "$pid" 2>/dev/null; then
         if [ "$(id -u)" -ne 0 ]; then
@@ -412,7 +425,16 @@ killport_update() {
     return 1
   fi
 
-  # Verify download integrity
+  # Verify download integrity: size check
+  local file_size
+  file_size=$(wc -c < "$tmp")
+  if [ "$file_size" -lt 1000 ]; then
+    echo "${_KP_RED}[error]${_KP_RESET} Downloaded file is too small (${file_size} bytes, expected >1000)" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+
+  # Verify download integrity: function check
   if ! grep -q 'killport()' "$tmp"; then
     echo "${_KP_RED}[error]${_KP_RESET} Downloaded file is invalid (missing killport function)" >&2
     rm -f "$tmp"
@@ -455,13 +477,16 @@ killport_update() {
 
 # ── Shell completions ────────────────────────────────────────────────────────
 
-# Bash completion
+# Bash completion (compatible with bash 3.2+)
 _killport_bash_completion() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   local opts="--help --version --update --dry-run --yes --force --quiet --timeout= --signal= --udp -y -q -v -h"
 
   if [[ "$cur" == -* ]]; then
-    mapfile -t COMPREPLY < <(compgen -W "$opts" -- "$cur")
+    COMPREPLY=()
+    while IFS= read -r line; do
+      COMPREPLY+=("$line")
+    done < <(compgen -W "$opts" -- "$cur")
   fi
 }
 
@@ -478,8 +503,8 @@ _killport_zsh_completion() {
     '--yes[Kill without confirmation]'
     '-y[Kill without confirmation]'
     '--force[Kill without confirmation]'
-    '--quiet[Suppress all output]'
-    '-q[Suppress all output]'
+    '--quiet[Suppress all output (implies --force)]'
+    '-q[Suppress all output (implies --force)]'
     '--timeout=[Timeout before SIGKILL (seconds)]:seconds:'
     '--signal=[Signal to send]:signal:(TERM HUP INT QUIT KILL USR1 USR2)'
     '--udp[Target UDP instead of TCP]'
